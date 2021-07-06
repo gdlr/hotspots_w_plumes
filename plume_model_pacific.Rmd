@@ -10,6 +10,7 @@ library(sf)
 library(raster)
 library(tidyverse)
 library(here)
+library(terra)
 
 rasterOptions(maxmemory = 1e10, progress = "text", timer = TRUE, memfrac = .7)
 ```
@@ -209,7 +210,11 @@ sum_fx(southwest_filesP, output = here("plume_outputs", "soutwest_tp.tif"))
 Sum all the rasters:
 
 ```{r}
-regionsP <- list.files()
+files_N <- list.files(here("plume_outputs"), pattern = "*tn.tif", full.names = T)
 
+sum_fx(files_N, output = here("plume_outputs", "us_tn_river.tif"))
+
+files_p <- list.files(here("plume_outputs"), pattern = "*tp.tif", full.names = T)
+sum_fx(files_p, output = here("plume_outputs", "us_tp_river.tif"))
 ```
 
