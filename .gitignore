@@ -3,5 +3,6 @@
 .RData
 .Ruserdata
 /data
-/newdata
-/scratchh
+/new_data
+/scratch
+/cropped_rasters

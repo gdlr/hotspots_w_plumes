@@ -14,33 +14,14 @@ library(rnaturalearthdata)
 library(rnaturalearthhires)
 library(rgdal)
 library(lwgeom)
+library(sf)
+library(maptools)
 
 rasterOptions(maxmemory = 1e10, progress = "text")
 ```
 
-```{r}
-# Read in the 2013 nutrient pollution from fertilizer dataset
-nut_raw <- raster(here("data", "ohi_2013", "nutrient_pollution_2013_raw.tif"))
+### This just straight up needs to be redone...
 
-plot(nut_raw)
-hist(nut_raw)
-unique(nut_raw)
-maxValue(nut_raw)
-
-# Per the methods, these values are log(x+1) transformed. We'd like to undo this...
-
-# Double check to see if the values make sense...
-# Log is the natural log. We want the log10 inverse
-max <- exp(maxValue(nut_raw))
-
-max10 <- exp(nut_raw, 10) + 10
-
-
-# We can un-log these values:
-nut_exp <- 10^(nut_raw) +1
-
-
-```
 
 
 ## What about the Sparrow model?
@@ -84,14 +65,17 @@ flow_comids <- flow_terminal %>%
 reaches_terminal <- inner_join(reaches_proj, flow_comids, by = "COMID") %>% 
   st_as_sf()
 # We get all the terminal reaches used in the SPARROW mode. Some are still land-based.
-plot(reaches_terminal)
+#cplot(reaches_terminal)
+```
 
+# This code reads in the ocean reaches:
+```{r}
 reaches_terminal <- read_sf(here("scratch"), layer = "pac_term_reaches")
 
 # In GIS (for speed), I buffered the coastline by 100 m and then selected all the stream reaches that intersected that buffer.
 ## Shoreline_selectt is a 100m buffer using the NOAA medium resolution shoreline
 ## Ocean reaches is a 1km buffer from the EEZ, which is too coarse
-ocean_reaches_pac <- as.data.frame(read_sf(here("data", "ocean_reaches"), layer = "shoreline_selectt"))
+ocean_reaches_pac <- as.data.frame(read_sf(here("scratch", "ocean_reaches"), layer = "shoreline_selectt"))
 
 # And we can join them to the terminal reaches, keeping only terminal reaches within 100m of the ocean.
 final_reaches <- inner_join(reaches_terminal, ocean_reaches_pac, by = "COMID") %>% 
@@ -109,6 +93,11 @@ reach_starts <- reaches_simple %>%
   as.data.frame() %>% 
   dplyr::select("COMID", "geometry") %>% 
   st_as_sf
+
+```
+
+
+```{r}
 
 #### DO I NEED THIS??
 ### IDK
@@ -239,60 +228,144 @@ in sparrow_pac:
 * DEL_FRAC is the fraction delivered downstream...
 
 ```{r}
+
+### THIS IS ALL FUCKED
 # Read in the snapped data...
 pac_n_snap <- read_sf(here("scratch"), layer = "pac_river_snap")
+# These are terminal reaches
+pac_reaches <- read_sf(here("scratch"), layer= "pac_term_reaches")
+sparrow_pac <- read_csv(here("data", "SPARROWmodelinp", "pac_sparrow_model_output_tn.txt"))
 
+sparrow_final <- sparrow_pac %>% 
+  select("comid", "al_tn", "CumAreaKM2")
+
+which.max(sparrow_pac$CumAreaKM2)
+
+test <- sparrow_pac[249714,]
 # Rejoin to the COMID's:
-snap_df <- data.frame(pac_n_snap) %>% 
-  cbind(pac_joinsf$comid) %>% 
-  st_as_sf() %>% 
-  rename(comid = "pac_joinsf$comid")
+
+snap_df <- pac_n_snap %>% 
+  mutate(comid = reach_starts$COMID)
 
 # Then add the total nitrogen to this, also CumAreaKM2
-
 snap_n_a <- sparrow_pac %>% 
   select("comid", "al_tn", "CumAreaKM2") %>% 
   inner_join(snap_df, by = "comid")
 
-# For testing purposes, let's take the max of this to test the plume model on a single point:
-which.max(snap_n_a$al_tn) #row 803
 
-## FOR loop starts here, probably:
-###### 
-test_pt <- snap_n_a[803,]
-
-# Set constants:
-c <- 0.5
-b <- 0.65
-         
-# Calculate the plume area
-p_area <- c*(test_pt$CumAreaKM2^b)
-
-pt_tn <- test_pt %>% 
-  dplyr::select("al_tn", "geometry") %>% 
+test_plume_df <- head(snap_n_a, 10) %>% 
   st_as_sf()
 
-# Rasterize that point
-pt_raster <- rasterize(pt_tn, ocean, field = 1, background = NA)
-
-pt_mx <- as.vector(pt_raster)
-# Find which cells are equal to 1:
-valid <- match(1, pt_mx)
-# Find the neighboring cells
-ngb <- adjacent(pt_raster, cells = valid, directions = 4, pairs = FALSE)
-# Make them 1:
-pt_raster[ngb] <- 1
-pt_raster = pt_raster + ocean
-hist(pt_raster)
-
-# Then we expand that point in a circle using the adjacent function:
-
-# That didn't work. The model returns a 1....
+eez <- raster(here("new_data", "ocean_masks", "ocean_mask_landnull.tif"))
+# Run this for the plume model.....
 
 
-a <- adjacent(pt_raster)
+# Turn it into sp...
+test_plume_spat <- as_Spatial(test_plume_df)
+
+ocean_polygon <- rasterToPolygons(eez)
+
+crs(ocean_polygon) <-  432
+plot(ocean_polygon)
+
+test_plume_snap <- maptools::snapPointsToLines(points = test_plume_spat, lines = ocean_polygon)
 
 
-ocean1 <- ocean + 1
+
+
+plume_fx(points = test_plume_df,
+         raster = eez,
+         path = here("scratch", "test_plume"))
+
+test_rast <- raster(here("scratch", "test_plume", "1671441.tif"))
+
+plot(test_rast)
 ```
 
+```{r}
+plume_fx <- function(points, raster, c = 0.5, b = 0.65, path){
+
+# points = snap_n_a[10,]
+# raster = eez
+# path = here("scratch", "test_plume")  
+  
+    # So there's only one row:
+    for(i in 1:nrow(points)){
+    
+      test_pt <- points[i,]
+      name <- paste("plume_", i, ".tif", sep = "")
+      path2 <- paste(path, points$comid, sep = "/")
+      
+      ### THIS HAPPENS ONCE
+      # Get which cell contains that point
+      cell <- cellFromXY(raster, st_coordinates(test_pt$geometry))
+      # Duplicate the OG raster
+      newraster <- raster
+      # Set point = 1
+      newraster[cell] <- 1
+      
+      # Calculate plume area: in KM2
+        c <- 0.5
+        b <- 0.65
+        p_area <- c*(test_pt$CumAreaKM2^b) *1000
+      
+      ### THIS REPEATS
+       tot_area <- 0
+       n_runs <- 1
+      repeat {
+        # get cell names for cells that are 1
+        newcell <- Which(newraster>=1, cells = TRUE)
+        # Find adjacent cells
+        adj <- adjacent(newraster, newcell, directions = 4, pairs = FALSE)
+        # Turn them into ones
+        newraster[adj] <- 1
+        # Create a new "newraster" with new ones:
+        newraster <- newraster+raster
+        tot_area <- sum(as.vector(area(newraster)*newraster), na.rm = TRUE)
+        n_runs <- n_runs+1
+        # Repeat function until the area is bigger than the plume:
+        if(tot_area >= p_area) break}
+     
+    ###
+    ### PLUMING
+    ###
+       
+     # Then I actually need to plume these into the ocean.
+       
+     # Get the effluent as a value
+     effluent <- test_pt$al_tn
+     # Get the proportion of effluent included in each expansion
+     prop_eff <- effluent/n_runs
+     
+     # Create a plume raster:
+     p_raster <- raster
+     final <- raster
+     final[cell] <- prop_eff
+      # Set OG point = effluent
+     p_raster[cell] <- 1
+     # Then, loop through again:
+     p_runs <- 1
+     repeat{
+        # get cell names for cells that are 1
+        p_cell <- Which(final>=1, cells = TRUE)
+        # Find adjacent cells
+        adj <- adjacent(p_raster, p_cell, directions = 4, pairs = FALSE)
+        # Turn them into ones
+        p_raster[adj] <- 1
+        # Set OG cells to NA's
+        p_raster[p_cell] <- NA
+        # Get cell numbers for new cells
+        e_cell <- Which(p_raster>=1, cells = TRUE)
+        # Add effluent proportionally over the new cells
+        final[e_cell] <- prop_eff/length(e_cell)
+        final <- final + raster
+        
+        # Conditional for loop ending
+        p_runs <- p_runs+1
+        # Repeat function until the area is bigger than the plume:
+        if(p_runs >= n_runs) break}
+     
+     writeRaster(final, path2, format = "GTiff", overwrite = TRUE)
+    }
+  }
+```
