@@ -26,6 +26,7 @@ units are... kgP/year
 ```{r}
 # Sum layers
 outfall_p <- raster(here("plume_outputs", "outfalls", "outfall_p.tif"))
+full_outfallP <- raster(here("plume_outputs", "outfalls", "full_P.tif"))
 river_p <- raster(here("plume_outputs", "us_tp_river.tif"))
 
 totalP <- outfall_p + river_p
